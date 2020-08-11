@@ -1,154 +1,146 @@
-import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:io';
-import 'auth.dart' as fbAuth;
-import 'storage.dart' as fbStorage;
-import 'database.dart' as fbDatabase;
 
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/material.dart';
 import 'package:path/path.dart'; //needed for basename
 
-void main() async {
+import 'auth.dart' as fbAuth;
+import 'database.dart' as fbDatabase;
+import 'storage.dart' as fbStorage;
 
-  final FirebaseApp app = await FirebaseApp.configure(
-      name: 'firebaseapp',
-      options: new FirebaseOptions(
-          googleAppID: '1:352942801806:android:383114c5c27090c2',
-          gcmSenderID: '352942801806',
-          apiKey: 'AIzaSyB10pg0ziWMaRqvApS7ij48zoU9wC6ugAU',
-          projectID: 'fir-app-c70aa',
-          databaseURL: 'https://fir-app-c70aa.firebaseio.com',
-      )
-  );
-
-  final FirebaseStorage storage = new FirebaseStorage(app: app,storageBucket: 'gs://fir-app-c70aa.appspot.com');
-  final FirebaseDatabase database = new FirebaseDatabase(app: app);
-
+void main() {
   runApp(new MaterialApp(
-    home: new MyApp(app:app, database: database, storage: storage),
+    home: new MyApp(),
   ));
 }
 
 class MyApp extends StatefulWidget {
-  MyApp({this.app,this.database,this.storage});
-  final FirebaseApp app;
-  final FirebaseDatabase database;
-  final FirebaseStorage storage;
-
   @override
-  _State createState() => new _State(app:app, database: database, storage: storage);
+  _State createState() => new _State();
 }
 
 class _State extends State<MyApp> {
-  _State({this.app,this.database,this.storage});
-  final FirebaseApp app;
-  final FirebaseDatabase database;
-  final FirebaseStorage storage;
 
-  String _status;
+  final scaffoldKey = GlobalKey<ScaffoldState>();
+
+  String _authStatus = 'Not Authenticated',
+      _uploadStatus = 'Not Uploaded';
   String _location;
-  StreamSubscription<Event> _counterSubscription;
+  FirebaseUser _user;
 
+  var _isUploading = false,
+      _isAuthenticating = false;
 
   @override
   void initState() {
     super.initState();
-    _status = 'Not Authenticated';
-    _signIn();
-
-  }
-
-  void _signIn() async {
-    if(await fbAuth.signInGoogle() == true) {
-      setState(() {
-        _status = 'Signed In';
-      });
-      _initDatabase();
-    } else {
-      setState(() {
-        _status = 'Could not sign in!';
-      });
-    }
-  }
-
-  void _signOut() async {
-    if(await fbAuth.signOut() == true) {
-      setState(() {
-        _status = 'Signed out';
-      });
-    } else {
-      setState(() {
-        _status = 'Signed in';
-      });
-    }
-  }
-
-  void _upload() async {
-    Directory systemTempDir = Directory.systemTemp;
-    File file = await File('${systemTempDir.path}/foo.txt').create();
-    await file.writeAsString('hello world');
-
-    String location = await fbStorage.upload(file, basename(file.path));
-    setState(() {
-      _location = location;
-      _status = 'Uploaded!';
-    });
-
-    print('Uploaded to ${_location}');
-
-  }
-
-  void _download() async {
-    if(_location.isEmpty) {
-      setState(() {
-        _status = 'Please upload first!';
-      });
-      return;
-    }
-
-    Uri location = Uri.parse(_location);
-    String data = await fbStorage.download(location);
-    setState(() {
-      _status = 'Downloaded: ${data}';
+    WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
+      _signIn();
     });
   }
 
-  void _initDatabase() async {
-    await fbDatabase.init(database);
-
-    _counterSubscription = fbDatabase.counterRef.onValue.listen((Event event) {
+  void _signIn() async => _wrapErrorHandling(() async {
+    setState(() {
+      _isAuthenticating = true;
+    });
+    try {
+      final authResult = await fbAuth.signInGoogle();
+      final user = authResult.user;
+      if (user != null) {
+        setState(() {
+          _user = user;
+          _authStatus = 'Signed in with Google\n'
+              'User uid: ${user.uid}\n'
+              'User email: ${user.email}\n'
+              'User name: ${user.displayName}\n'
+              'User phoneNumber: ${user.phoneNumber}';
+        });
+        await fbDatabase.init();
+        setState(() {});
+      } else {
+        setState(() {
+          _authStatus = 'Could not sign in!';
+        });
+      }
+    } finally {
       setState(() {
-        fbDatabase.error = null;
-        fbDatabase.counter = event.snapshot.value ?? 0;
-      });
-    },onError: (Object o) {
-      final DatabaseError error = o;
-      setState(() {
-        fbDatabase.error = error;
+        _isAuthenticating = false;
       });
     }
-    );
+  });
+
+  void _signOut() async => _wrapErrorHandling(() async {
+    await fbAuth.signOut();
+    setState(() {
+      _authStatus = 'Signed out';
+      _user = null;
+    });
+  });
+
+  _ensureSignedIn() {
+    if (_user == null)
+      throw "Please, Sign In first!";
   }
+  void _upload() async => _wrapErrorHandling(() async {
+    _ensureSignedIn();
+    //
+    setState(() {
+      _isUploading = true;
+    });
+    try {
+      Directory systemTempDir = Directory.systemTemp;
+      File file = await File('${systemTempDir.path}/test.txt').create();
+      await file.writeAsString('Firebase is awesome! (${DateTime.now()})');
 
-  void _increment() async {
-    int value = fbDatabase.counter + 1;
-    fbDatabase.setCounter(value);
-  }
+      String location = await fbStorage.upload(file, basename(file.path));
+      setState(() {
+        _location = location;
+        _uploadStatus = 'Uploaded!\n$location';
+      });
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
+  });
 
-  void _decrement() async {
-    int value = fbDatabase.counter - 1;
-    fbDatabase.setCounter(value);
-  }
+  void _download() async => _wrapErrorHandling(() async {
+    setState(() {
+      _isUploading = true;
+    });
+    try {
+      Uri location = Uri.parse(_location);
+      String data = await fbStorage.download(location);
+      setState(() {
+        _uploadStatus = 'Downloaded: $data';
+      });
+    } finally {
+      setState(() {
+        _isUploading = false;
+      });
+    }
+  });
 
+  void _increment() async => _wrapErrorHandling(() async {
+      _ensureSignedIn();
+      int value = fbDatabase.counter + 1;
+      await fbDatabase.setCounter(value);
+    });
 
+  void _decrement() async => _wrapErrorHandling(() async {
+      _ensureSignedIn();
+      int value = fbDatabase.counter - 1;
+      await fbDatabase.setCounter(value);
+    });
 
   @override
   Widget build(BuildContext context) {
     return new Scaffold(
+      key: scaffoldKey,
       appBar: new AppBar(
-        title: new Text('Name here'),
+        title: new Text('Firebase database sample'),
       ),
       body: new Container(
         padding: new EdgeInsets.all(32.0),
@@ -157,24 +149,35 @@ class _State extends State<MyApp> {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
-              new Text(_status),
-              new Text('Counter ${fbDatabase.counter}'),
-              new Text('Error: ${fbDatabase.error.toString()}'),
+              _isAuthenticating ? CircularProgressIndicator() : new Text(_authStatus),
               new Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: <Widget>[
-                  new RaisedButton(onPressed: _signOut, child: new Text('Sign out'),),
-                  new RaisedButton(onPressed: _signIn, child: new Text('Sign in Google'),),
+                  new RaisedButton(onPressed: _user != null ? _signOut : null, child: new Text('Sign out'),),
+                  new RaisedButton(onPressed: _user == null ? _signIn : null, child: new Text('Sign in Google'),),
                 ],
               ),
+              Divider(height: 20,),
+              _isUploading ? CircularProgressIndicator() : new Text(_uploadStatus),
               new Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: <Widget>[
                   new RaisedButton(onPressed: _upload, child: new Text('Upload'),),
-                  new RaisedButton(onPressed: _download, child: new Text('Download'),),
+                  new RaisedButton(onPressed: _location != null ? _download : null, child: new Text('Download'),),
                 ],
+              ),
+              Divider(height: 20,),
+              StreamBuilder<Event>(
+                  stream: fbDatabase.counterRef == null
+                      ? Stream.empty()
+                      : fbDatabase.counterRef.onValue.asBroadcastStream(),
+                  builder: (BuildContext context, AsyncSnapshot<Event> snapshot) {
+                    return snapshot.hasData && snapshot.data.snapshot.value != null
+                        ? Text('Counter: ${snapshot.data.snapshot.value}')
+                        : Text(' ');
+                  },
               ),
               new Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -190,4 +193,17 @@ class _State extends State<MyApp> {
       ),
     );
   }
+
+  _wrapErrorHandling(action()) async {
+    try {
+      await action();
+    } catch (e) {
+      _showSnack("$e");
+    }
+  }
+
+  _showSnack(String text) {
+    scaffoldKey.currentState.showSnackBar(SnackBar(content: Text(text),));
+  }
+
 }
